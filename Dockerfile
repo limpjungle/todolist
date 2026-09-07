@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o main ./cmd/api
 
 FROM alpine:3.24
-RUN apk --no-cache add ca-certificates && addgroup -g 1000 appgroup && user add -D -u 1000 -G appgroup appuser
+RUN apk --no-cache add ca-certificates && addgroup -g 1000 appgroup && adduser -D -u 1000 -G appgroup appuser
 WORKDIR /app/
 COPY --from=build /src/main .
 RUN chown -R appuser:appgroup /app/

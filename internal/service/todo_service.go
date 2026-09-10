@@ -3,6 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
+	"todolist/internal/cache"
+	"todolist/internal/event"
+	"todolist/internal/kafka"
 	"todolist/internal/model"
 	"todolist/internal/repository"
 )
@@ -16,11 +21,13 @@ type TodoService interface {
 }
 
 type todoService struct {
-	repo repository.TodoRepository
+	repo     repository.TodoRepository
+	cache    cache.Cache
+	producer kafka.Producer
 }
 
-func NewTodoService(repo repository.TodoRepository) TodoService {
-	return &todoService{repo: repo}
+func NewTodoService(repo repository.TodoRepository, cache cache.Cache, producer kafka.Producer) TodoService {
+	return &todoService{repo: repo, cache: cache, producer: producer}
 }
 
 func (s *todoService) Create(ctx context.Context, req model.CreateTodoRequest) (*model.Todo, error) {
@@ -32,10 +39,20 @@ func (s *todoService) Create(ctx context.Context, req model.CreateTodoRequest) (
 	if err := s.repo.Create(ctx, todo); err != nil {
 		return nil, fmt.Errorf("failed to create todo: %w", err)
 	}
+
+	_ = s.cache.SetTodo(ctx, todo)
+	_ = s.cache.InvalidateAll(ctx)
+
+	s.publish(ctx, event.TodoCreated, todo)
 	return todo, nil
 }
 
 func (s *todoService) GetByID(ctx context.Context, id int) (*model.Todo, error) {
+	// Пробуем кеш
+	if cached, err := s.cache.GetTodo(ctx, id); err == nil && cached != nil {
+		return cached, nil
+	}
+
 	todo, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get todo: %w", err)
@@ -43,13 +60,26 @@ func (s *todoService) GetByID(ctx context.Context, id int) (*model.Todo, error) 
 	if todo == nil {
 		return nil, fmt.Errorf("todo not found")
 	}
+
+	_ = s.cache.SetTodo(ctx, todo)
 	return todo, nil
 }
 
 func (s *todoService) GetAll(ctx context.Context, completed *bool) ([]model.Todo, error) {
+	// Кешируем только запрос без фильтра
+	if completed == nil {
+		if cached, err := s.cache.GetAllTodos(ctx); err == nil && cached != nil {
+			return cached, nil
+		}
+	}
+
 	todos, err := s.repo.GetAll(ctx, completed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get todos: %w", err)
+	}
+
+	if completed == nil {
+		_ = s.cache.SetAllTodos(ctx, todos)
 	}
 	return todos, nil
 }
@@ -78,8 +108,12 @@ func (s *todoService) Update(ctx context.Context, id int, req model.UpdateTodoRe
 		return nil, fmt.Errorf("failed to update todo: %w", err)
 	}
 
-	// Получаем обновленную запись
-	return s.repo.GetByID(ctx, id)
+	updated, _ := s.repo.GetByID(ctx, id)
+	_ = s.cache.SetTodo(ctx, updated)
+	_ = s.cache.InvalidateAll(ctx)
+
+	s.publish(ctx, event.TodoUpdated, updated)
+	return updated, nil
 }
 
 func (s *todoService) Delete(ctx context.Context, id int) error {
@@ -90,5 +124,26 @@ func (s *todoService) Delete(ctx context.Context, id int) error {
 	if existing == nil {
 		return fmt.Errorf("todo not found")
 	}
-	return s.repo.Delete(ctx, id)
+
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+
+	_ = s.cache.DeleteTodo(ctx, id)
+	_ = s.cache.InvalidateAll(ctx)
+
+	s.publish(ctx, event.TodoDeleted, &model.Todo{ID: id})
+	return nil
+}
+
+func (s *todoService) publish(ctx context.Context, evtType event.TodoEventType, todo *model.Todo) {
+	evt := event.TodoEvent{
+		Type:      evtType,
+		TodoID:    todo.ID,
+		Todo:      todo,
+		Timestamp: time.Now().Unix(),
+	}
+	if err := s.producer.PublishEvent(ctx, evt); err != nil {
+		log.Printf("failed to publish event: %v", err)
+	}
 }

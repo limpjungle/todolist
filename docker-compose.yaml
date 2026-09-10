@@ -66,12 +66,14 @@ services:
     env_file:
       - .env
     depends_on:
+
       db:
         condition: service_started
       redis:
         condition: service_started
       kafka-init:
         condition: service_completed_successfully
+
     restart: unless-stopped
 
 volumes:

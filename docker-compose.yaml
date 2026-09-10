@@ -37,6 +37,7 @@ services:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
     volumes:
       - kafka_data:/var/lib/kafka
+
   kafka-init:
     image: apache/kafka:4.3.1
     container_name: todolist_kafka_init
@@ -56,6 +57,44 @@ services:
         echo 'Topic created:' &&
         kafka-topics.sh --bootstrap-server kafka:9092 --list
       "
+
+  prometheus:
+    image: prom/prometheus:v3.13.3
+    container_name: todolist_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yaml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.8-slim
+    container_name: todolist_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    container_name: todolist_cadvisor
+    ports:
+      - "8888:8888"
+    command:
+      - '-port=8888'
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    restart: unless-stopped
+
   app:
     build:
       context: .
@@ -80,4 +119,6 @@ volumes:
   postgres_data:
   redis_data:
   kafka_data:
+  prometheus_data:
+  grafana_data:
 
